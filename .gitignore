@@ -61,3 +61,10 @@ Desktop.ini
 
 # Logs
 *.log
+
+# Local files & folders (keep local only, do not push to remote)
+AI_Engineer/
+test_documents/
+*.pdf
+*.md
+!README.md
