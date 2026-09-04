@@ -1,10 +1,17 @@
 """Data Access Layer Package.
 
-Exports data access functions for vector storage, BM25 keyword search, and Neo4j graph storage.
+Exports data access functions for Pinecone vector storage, OpenAI embedding provider,
+BM25 keyword search, and Neo4j graph storage.
 """
 
+from data_access.embedding_provider import (
+    OpenAIEmbeddingProvider,
+    MockEmbeddingProvider,
+    get_embedding_provider,
+)
 from data_access.vector_data_access import (
     generate_embedding,
+    get_pinecone_index,
     upsert_vector_chunks,
     query_vector_store,
 )
@@ -18,7 +25,11 @@ from data_access.graph_data_access import (
 )
 
 __all__ = [
+    "OpenAIEmbeddingProvider",
+    "MockEmbeddingProvider",
+    "get_embedding_provider",
     "generate_embedding",
+    "get_pinecone_index",
     "upsert_vector_chunks",
     "query_vector_store",
     "index_bm25_chunks",

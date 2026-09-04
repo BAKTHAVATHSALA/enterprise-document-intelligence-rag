@@ -23,6 +23,9 @@ from interfaces.query_interface import (
 from interfaces.config_interface import (
     AppConfigInterface,
 )
+from interfaces.embedding_interface import (
+    EmbeddingProviderInterface,
+)
 
 __all__ = [
     "DocumentStatusEnum",
@@ -40,4 +43,6 @@ __all__ = [
     "CitationInterface",
     "QueryResponseInterface",
     "AppConfigInterface",
+    "EmbeddingProviderInterface",
 ]
+
