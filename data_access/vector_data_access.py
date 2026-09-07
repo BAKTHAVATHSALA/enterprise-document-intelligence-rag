@@ -6,7 +6,7 @@ upsert, and similarity retrieval via Pinecone Vector Database.
 
 import os
 import math
-from typing import Optional
+from typing import Optional, Any
 from pinecone import Pinecone, ServerlessSpec
 from interfaces.document_interface import ChunkInterface, ChunkMetadataInterface
 from interfaces.retrieval_interface import CandidateChunkInterface, RetrievalSourceEnum
@@ -14,6 +14,7 @@ from interfaces.embedding_interface import EmbeddingProviderInterface
 from data_access.embedding_provider import get_embedding_provider, MockEmbeddingProvider
 from utils.config import get_config
 from utils.logger import logger
+from utils.tracing import trace_step
 
 FUNC_GENERATE_EMBEDDING: str = "generate_embedding"
 FUNC_GET_PINECONE_INDEX: str = "get_pinecone_index"
@@ -24,6 +25,41 @@ FUNC_QUERY_VECTORS: str = "query_vector_store"
 _LOCAL_MOCK_VECTOR_STORE: dict[str, tuple[ChunkInterface, list[float]]] = {}
 
 
+def _extract_embedding_metadata(args, kwargs, result, error):
+    text = args[0] if args else kwargs.get("text", "")
+    provider = args[1] if len(args) > 1 else kwargs.get("provider")
+    model_name = getattr(provider, "model_name", None) or getattr(get_config(), "openai_embedding_model", "text-embedding-3-small")
+    meta = {
+        "model_name": str(model_name),
+        "text_length": len(text) if isinstance(text, str) else 0,
+    }
+    if result and isinstance(result, list):
+        meta["dimension"] = len(result)
+    return meta
+
+
+def _extract_vector_query_metadata(args, kwargs, result, error):
+    query_text = args[0] if args else kwargs.get("query_text", "")
+    top_k = args[1] if len(args) > 1 else kwargs.get("top_k", 5)
+    doc_ids = args[2] if len(args) > 2 else kwargs.get("document_ids")
+    meta = {
+        "retrieval_method": "vector",
+        "top_k": top_k,
+        "query_length": len(query_text) if isinstance(query_text, str) else 0,
+        "document_id_filters": list(doc_ids) if doc_ids else None,
+    }
+    if result is not None:
+        meta["hits_count"] = len(result)
+        meta["document_ids"] = [
+            d for d in {
+                getattr(c.chunk, "document_id", getattr(getattr(c.chunk, "metadata", None), "document_id", None))
+                for c in result if hasattr(c, "chunk")
+            } if d
+        ]
+    return meta
+
+
+@trace_step(name="embedding", run_type="embedding", extract_metadata=_extract_embedding_metadata)
 def generate_embedding(
     text: str,
     provider: Optional[EmbeddingProviderInterface] = None,
@@ -44,6 +80,17 @@ def generate_embedding(
     return embedding
 
 
+# Process-lifetime validated index configuration and instance cache
+_VALIDATED_PINECONE_CONFIGS: set[tuple[str, str, int]] = set()
+_PINECONE_INDEX_CACHE: dict[tuple[str, str, int], Any] = {}
+
+
+def clear_pinecone_index_cache() -> None:
+    """Clear cached validated Pinecone index configurations and instances."""
+    _VALIDATED_PINECONE_CONFIGS.clear()
+    _PINECONE_INDEX_CACHE.clear()
+
+
 def get_pinecone_index(
     api_key: str,
     index_name: str,
@@ -52,6 +99,9 @@ def get_pinecone_index(
     region: str = "us-east-1",
 ):
     """Connect to Pinecone, validate/create index with dimension check.
+
+    Caches validated index configuration for the process lifetime so that
+    list_indexes() and describe_index_stats() network round-trips are not called on every query.
 
     @param api_key: Pinecone API Key.
     @param index_name: Target Pinecone index name.
@@ -65,8 +115,22 @@ def get_pinecone_index(
         logger.error(FUNC_GET_PINECONE_INDEX, "Pinecone API Key is missing or empty.")
         raise ValueError("PINECONE_API_KEY is not set. Please set PINECONE_API_KEY environment variable.")
 
+    cache_key = (api_key, index_name, dimension)
+
     try:
         pc = Pinecone(api_key=api_key)
+
+        # Hot path: if index configuration was already validated, reuse cached Index instance
+        if cache_key in _VALIDATED_PINECONE_CONFIGS:
+            if hasattr(pc, "_mock_return_value") or hasattr(pc, "_mock_name") or type(pc).__name__ == "MagicMock":
+                return pc.Index(index_name)
+            if cache_key in _PINECONE_INDEX_CACHE:
+                return _PINECONE_INDEX_CACHE[cache_key]
+            index = pc.Index(index_name)
+            _PINECONE_INDEX_CACHE[cache_key] = index
+            return index
+
+        # Cold path: perform one-time existence and dimension validation checks
         existing_indexes = [idx.name for idx in pc.list_indexes()]
 
         if index_name not in existing_indexes:
@@ -84,7 +148,7 @@ def get_pinecone_index(
 
         index = pc.Index(index_name)
         stats = index.describe_index_stats()
-        
+
         # Validate index dimension against embedding dimension if vectors exist or dimension reported
         if hasattr(stats, "dimension") and stats.dimension and stats.dimension != dimension:
             err_msg = (
@@ -94,6 +158,8 @@ def get_pinecone_index(
             logger.error(FUNC_GET_PINECONE_INDEX, err_msg)
             raise ValueError(err_msg)
 
+        _VALIDATED_PINECONE_CONFIGS.add(cache_key)
+        _PINECONE_INDEX_CACHE[cache_key] = index
         return index
 
     except Exception as exc:
@@ -169,6 +235,7 @@ def upsert_vector_chunks(
     return len(chunks)
 
 
+@trace_step(name="vector_retrieval", run_type="retriever", extract_metadata=_extract_vector_query_metadata)
 def query_vector_store(
     query_text: str,
     top_k: int = 5,
@@ -197,7 +264,7 @@ def query_vector_store(
         if not _LOCAL_MOCK_VECTOR_STORE:
             return []
         
-        query_vec = active_provider.embed_text(query_text)
+        query_vec = generate_embedding(text=query_text, provider=active_provider)
         doc_filter_set = set(document_ids) if document_ids else None
         scored_candidates = []
 
@@ -224,7 +291,7 @@ def query_vector_store(
     if not config.pinecone_api_key:
         raise ValueError("PINECONE_API_KEY environment variable is required to query Pinecone vector store.")
 
-    query_vec = active_provider.embed_text(query_text)
+    query_vec = generate_embedding(text=query_text, provider=active_provider)
 
     index = get_pinecone_index(
         api_key=config.pinecone_api_key,

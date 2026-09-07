@@ -26,4 +26,11 @@ class AppConfigInterface(BaseModel):
     neo4j_password: str = Field(default="password", description="Neo4j password")
     langsmith_tracing: bool = Field(default=False, description="Enable LangSmith tracing flag")
     langsmith_api_key: str = Field(default="", description="LangSmith API Key")
+    langsmith_project: str = Field(default="distributed-rag", description="LangSmith Project Name")
+    postgres_host: str = Field(default="", description="PostgreSQL database host")
+    postgres_db: str = Field(default="neondb", description="PostgreSQL database name")
+    postgres_user: str = Field(default="", description="PostgreSQL username")
+    postgres_password: str = Field(default="", description="PostgreSQL password")
+    database_url: str = Field(default="", description="PostgreSQL DATABASE_URL connection string")
+
 

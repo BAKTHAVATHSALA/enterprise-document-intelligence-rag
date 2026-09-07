@@ -11,6 +11,7 @@ from interfaces.document_interface import ChunkInterface, ChunkMetadataInterface
 from interfaces.retrieval_interface import CandidateChunkInterface, RetrievalSourceEnum
 from utils.config import get_config
 from utils.logger import logger
+from utils.tracing import trace_step
 
 FUNC_GET_DRIVER: str = "get_neo4j_driver"
 FUNC_CLOSE_DRIVER: str = "close_neo4j_driver"
@@ -264,6 +265,28 @@ def upsert_graph_nodes(
     return total_rels
 
 
+def _extract_graph_metadata(args, kwargs, result, error):
+    query_text = args[0] if args else kwargs.get("query_text", "")
+    top_k = args[1] if len(args) > 1 else kwargs.get("top_k", 5)
+    doc_ids = args[2] if len(args) > 2 else kwargs.get("document_ids")
+    meta = {
+        "retrieval_method": "graph",
+        "top_k": top_k,
+        "query_length": len(query_text) if isinstance(query_text, str) else 0,
+        "document_id_filters": list(doc_ids) if doc_ids else None,
+    }
+    if result is not None:
+        meta["hits_count"] = len(result)
+        meta["document_ids"] = [
+            d for d in {
+                getattr(c.chunk, "document_id", getattr(getattr(c.chunk, "metadata", None), "document_id", None))
+                for c in result if hasattr(c, "chunk")
+            } if d
+        ]
+    return meta
+
+
+@trace_step(name="graph_retrieval", run_type="retriever", extract_metadata=_extract_graph_metadata)
 def query_graph_store(
     query_text: str,
     top_k: int = 5,

@@ -1,0 +1,182 @@
+[
+  {
+    "id": "gold_01",
+    "question": "What are the five Core Functions of the NIST Privacy Framework Version 1.0?",
+    "source_pdf": "NIST.CSWP.01162020.pdf",
+    "page_number": 10,
+    "question_type": "easy",
+    "expected_answer": "The five Core Functions of the NIST Privacy Framework 1.0 are Identify-P (ID.P), Govern-P (GV.P), Control-P (CT.P), Communicate-P (CM.P), and Protect-P (PR.P).",
+    "document_ids": ["NIST.CSWP.01162020.pdf"]
+  },
+  {
+    "id": "gold_02",
+    "question": "According to NIST CSWP 01162020, what is the key difference between privacy risk and cybersecurity risk?",
+    "source_pdf": "NIST.CSWP.01162020.pdf",
+    "page_number": 7,
+    "question_type": "specific",
+    "expected_answer": "Privacy risks arise as a byproduct of data processing, whereas cybersecurity risks arise from loss of confidentiality, integrity, or availability due to unauthorized access or security incidents.",
+    "document_ids": ["NIST.CSWP.01162020.pdf"]
+  },
+  {
+    "id": "gold_03",
+    "question": "What are the four Implementation Tiers defined in the NIST Privacy Framework?",
+    "source_pdf": "NIST.CSWP.01162020.pdf",
+    "page_number": 12,
+    "question_type": "specific",
+    "expected_answer": "The four Implementation Tiers are Tier 1 (Partial), Tier 2 (Risk Informed), Tier 3 (Repeatable), and Tier 4 (Adaptive).",
+    "document_ids": ["NIST.CSWP.01162020.pdf"]
+  },
+  {
+    "id": "gold_04",
+    "question": "How can organizations use the NIST Privacy Framework when informing buying decisions for products or services?",
+    "source_pdf": "NIST.CSWP.01162020.pdf",
+    "page_number": 18,
+    "question_type": "specific",
+    "expected_answer": "Organizations can use the Privacy Framework Core categories and subcategories to communicate privacy requirements and capabilities to suppliers, evaluate third-party products, and establish data processing expectations.",
+    "document_ids": ["NIST.CSWP.01162020.pdf"]
+  },
+  {
+    "id": "gold_05",
+    "question": "How does the Privacy Framework Core complement System Development Life Cycle (SDLC) integration?",
+    "source_pdf": "NIST.CSWP.01162020.pdf",
+    "page_number": 16,
+    "question_type": "cross-document",
+    "expected_answer": "It provides a structure to integrate privacy risk assessments, data processing boundaries, and privacy safeguards early into system design, requirements definition, deployment, and operation phases.",
+    "document_ids": ["NIST.CSWP.01162020.pdf"]
+  },
+  {
+    "id": "gold_06",
+    "question": "What is the new sixth Core Function introduced in NIST Cybersecurity Framework (CSF) 2.0?",
+    "source_pdf": "NIST.CSWP.29.pdf",
+    "page_number": 8,
+    "question_type": "easy",
+    "expected_answer": "The GOVERN (GV) Function was introduced in CSF 2.0 alongside Identify, Protect, Detect, Respond, and Recover.",
+    "document_ids": ["NIST.CSWP.29.pdf"]
+  },
+  {
+    "id": "gold_07",
+    "question": "How did the scope of NIST CSF 2.0 change compared to previous versions of the Framework?",
+    "source_pdf": "NIST.CSWP.29.pdf",
+    "page_number": 2,
+    "question_type": "specific",
+    "expected_answer": "CSF 2.0 expanded its scope beyond critical infrastructure to apply to all organizations across industry, government, and academia regardless of size or degree of cybersecurity sophistication.",
+    "document_ids": ["NIST.CSWP.29.pdf"]
+  },
+  {
+    "id": "gold_08",
+    "question": "What are the four CSF Tiers defined in NIST CSWP 29 Appendix B?",
+    "source_pdf": "NIST.CSWP.29.pdf",
+    "page_number": 12,
+    "question_type": "specific",
+    "expected_answer": "Tier 1 (Partial), Tier 2 (Risk Informed), Tier 3 (Repeatable), and Tier 4 (Adaptive).",
+    "document_ids": ["NIST.CSWP.29.pdf"]
+  },
+  {
+    "id": "gold_09",
+    "question": "In NIST CSF 2.0, what does an Organizational Profile represent?",
+    "source_pdf": "NIST.CSWP.29.pdf",
+    "page_number": 11,
+    "question_type": "specific",
+    "expected_answer": "An Organizational Profile describes an organization's current and/or target cybersecurity outcomes in terms of the CSF Core categories and subcategories.",
+    "document_ids": ["NIST.CSWP.29.pdf"]
+  },
+  {
+    "id": "gold_10",
+    "question": "What role does Supply Chain Risk Management play within NIST CSF 2.0 Governance?",
+    "source_pdf": "NIST.CSWP.29.pdf",
+    "page_number": 8,
+    "question_type": "cross-document",
+    "expected_answer": "Cybersecurity Supply Chain Risk Management (C-SCRM) is integrated into the Govern function (GV.SC) to ensure organizational risk management strategy accounts for third-party suppliers, vendors, and products.",
+    "document_ids": ["NIST.CSWP.29.pdf"]
+  },
+  {
+    "id": "gold_11",
+    "question": "What online tool mentioned in NIST SP 1299 allows users to browse and download the CSF 2.0 Core and mapped content?",
+    "source_pdf": "NIST.SP.1299.pdf.pdf",
+    "page_number": 3,
+    "question_type": "easy",
+    "expected_answer": "The Cybersecurity & Privacy Reference Tool (CPRT).",
+    "document_ids": ["NIST.SP.1299.pdf.pdf"]
+  },
+  {
+    "id": "gold_12",
+    "question": "According to NIST SP 1299, what are Implementation Examples in the CSF 2.0 suite?",
+    "source_pdf": "NIST.SP.1299.pdf.pdf",
+    "page_number": 3,
+    "question_type": "specific",
+    "expected_answer": "Implementation Examples are concise, action-oriented steps that help organizations achieve the outcomes of specific CSF 2.0 Subcategories.",
+    "document_ids": ["NIST.SP.1299.pdf.pdf"]
+  },
+  {
+    "id": "gold_13",
+    "question": "What action steps are recommended under the RESPOND function in NIST SP 1299?",
+    "source_pdf": "NIST.SP.1299.pdf.pdf",
+    "page_number": 7,
+    "question_type": "specific",
+    "expected_answer": "Understand roles and responsibilities, execute incident response plans, collect and store incident forensic data securely, notify internal/external stakeholders, and contain/eradicate incidents.",
+    "document_ids": ["NIST.SP.1299.pdf.pdf"]
+  },
+  {
+    "id": "gold_14",
+    "question": "What key outcome is described for the PROTECT function in NIST SP 1299?",
+    "source_pdf": "NIST.SP.1299.pdf.pdf",
+    "page_number": 6,
+    "question_type": "specific",
+    "expected_answer": "Safeguards to manage the organization's cybersecurity risks are used (e.g. access control, awareness training, data security, platform security, and resilience).",
+    "document_ids": ["NIST.SP.1299.pdf.pdf"]
+  },
+  {
+    "id": "gold_15",
+    "question": "What formats are available for exporting the CSF 2.0 Core using the NIST Reference Tool described in NIST SP 1299?",
+    "source_pdf": "NIST.SP.1299.pdf.pdf",
+    "page_number": 3,
+    "question_type": "cross-document",
+    "expected_answer": "Human and machine-readable versions in JSON and Excel formats.",
+    "document_ids": ["NIST.SP.1299.pdf.pdf"]
+  },
+  {
+    "id": "gold_16",
+    "question": "Who is generally responsible for selecting the CSF Tiers an organization should meet according to NIST SP 1302?",
+    "source_pdf": "NIST.SP.1302.pdf.pdf",
+    "page_number": 2,
+    "question_type": "easy",
+    "expected_answer": "Organizational leadership is generally responsible for selecting the CSF Tiers.",
+    "document_ids": ["NIST.SP.1302.pdf.pdf"]
+  },
+  {
+    "id": "gold_17",
+    "question": "According to NIST SP 1302, at what level of abstraction is selecting CSF Tiers recommended over lower Subcategory selections?",
+    "source_pdf": "NIST.SP.1302.pdf.pdf",
+    "page_number": 2,
+    "question_type": "specific",
+    "expected_answer": "Selecting Tiers overall or at the Function or Category level provides a better sense of organizational practices than selecting Tiers at the lower Subcategory level.",
+    "document_ids": ["NIST.SP.1302.pdf.pdf"]
+  },
+  {
+    "id": "gold_18",
+    "question": "What two separate component descriptions make up each CSF Tier in Appendix B according to NIST SP 1302?",
+    "source_pdf": "NIST.SP.1302.pdf.pdf",
+    "page_number": 2,
+    "question_type": "specific",
+    "expected_answer": "Cybersecurity Risk Governance (for the Govern Function) and Cybersecurity Risk Management (for Identify, Protect, Detect, Respond, and Recover).",
+    "document_ids": ["NIST.SP.1302.pdf.pdf"]
+  },
+  {
+    "id": "gold_19",
+    "question": "What characteristics define Tier 2 (Risk Informed) governance according to NIST SP 1302?",
+    "source_pdf": "NIST.SP.1302.pdf.pdf",
+    "page_number": 3,
+    "question_type": "specific",
+    "expected_answer": "Organizational awareness of cybersecurity risks exists, but an organization-wide management approach is not formally established; risk assessment is not typically repeatable; and information sharing is informal.",
+    "document_ids": ["NIST.SP.1302.pdf.pdf"]
+  },
+  {
+    "id": "gold_20",
+    "question": "What factors should leadership consider when selecting appropriate CSF Tiers according to NIST SP 1302?",
+    "source_pdf": "NIST.SP.1302.pdf.pdf",
+    "page_number": 2,
+    "question_type": "cross-document",
+    "expected_answer": "Current risk management practices, threat environment, legal and regulatory requirements, information sharing practices, business/mission objectives, supply chain requirements, and organizational constraints/resources.",
+    "document_ids": ["NIST.SP.1302.pdf.pdf"]
+  }
+]

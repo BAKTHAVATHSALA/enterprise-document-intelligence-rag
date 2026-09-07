@@ -6,6 +6,7 @@ file validation (empty, corrupted, invalid extension), and document isolation.
 """
 
 import os
+import pytest
 from fastapi.testclient import TestClient
 from main import app
 from utils.pdf_parser import parse_pdf_document, ParsedDocumentResult
@@ -29,6 +30,12 @@ from eval.evaluator import calculate_retrieval_metrics
 
 client = TestClient(app)
 
+@pytest.fixture(scope="module", autouse=True)
+def client_lifespan():
+    """Maintain running application lifespan and background worker for test module."""
+    with client:
+        yield
+
 TEST_DOCS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "test_documents")
 CONTRACT_ABC_PATH = os.path.join(TEST_DOCS_DIR, "contract_abc.pdf")
 CONTRACT_XYZ_PATH = os.path.join(TEST_DOCS_DIR, "contract_xyz.pdf")
@@ -36,20 +43,35 @@ TECH_POLICY_PATH = os.path.join(TEST_DOCS_DIR, "technical_policy.pdf")
 
 
 def test_1_valid_pdf_upload_success() -> None:
-    """TEST 1: Valid PDF uploads successfully via POST /documents."""
+    """TEST 1: Valid PDF uploads successfully via async POST /documents with polling."""
+    import time
     assert os.path.exists(CONTRACT_ABC_PATH), f"Fixture not found: {CONTRACT_ABC_PATH}"
     with open(CONTRACT_ABC_PATH, "rb") as f:
         pdf_bytes = f.read()
 
     resp = client.post("/documents", files={"file": ("contract_abc.pdf", pdf_bytes, "application/pdf")})
-    if resp.status_code != 201:
+    if resp.status_code != 202:
         print(f"DEBUG TEST 1: Status={resp.status_code}, Body={resp.text}")
 
-    assert resp.status_code == 201, f"Failed upload: {resp.text}"
+    assert resp.status_code == 202, f"Failed upload: {resp.text}"
     json_data = resp.json()
-    assert json_data["status"] == "COMPLETED"
     assert "document_id" in json_data
-    assert json_data["processed_chunks"] > 0
+    assert "job_id" in json_data
+    doc_id = json_data["document_id"]
+
+    # Poll status endpoint until ingestion pipeline reaches COMPLETED
+    final_status = None
+    for _ in range(60):
+        s_resp = client.get(f"/documents/{doc_id}/status")
+        if s_resp.status_code == 200:
+            final_status = s_resp.json()
+            if final_status["status"] in ("COMPLETED", "FAILED"):
+                break
+        time.sleep(0.5)
+
+    assert final_status is not None
+    assert final_status["status"] == "COMPLETED", f"Ingestion did not complete: {final_status}"
+    assert final_status["processed_chunks"] > 0
 
 
 def test_2_docling_pdf_processing() -> None:
@@ -152,6 +174,7 @@ def test_10_corrupted_pdf_rejected_gracefully() -> None:
 
 def test_11_distinct_pdfs_receive_different_ids() -> None:
     """TEST 11: Uploading two different PDFs assigns distinct document IDs and keeps data isolated."""
+    import time
     with open(CONTRACT_ABC_PATH, "rb") as f1:
         bytes1 = f1.read()
     with open(CONTRACT_XYZ_PATH, "rb") as f2:
@@ -160,13 +183,21 @@ def test_11_distinct_pdfs_receive_different_ids() -> None:
     r1 = client.post("/documents", files={"file": ("contract_abc.pdf", bytes1, "application/pdf")})
     r2 = client.post("/documents", files={"file": ("contract_xyz.pdf", bytes2, "application/pdf")})
 
-    assert r1.status_code == 201
-    assert r2.status_code == 201
+    assert r1.status_code == 202, f"Failed r1 upload: {r1.text}"
+    assert r2.status_code == 202, f"Failed r2 upload: {r2.text}"
 
     doc1_id = r1.json()["document_id"]
     doc2_id = r2.json()["document_id"]
 
     assert doc1_id != doc2_id
+
+    # Poll both documents until ingestion completes
+    for doc_id in (doc1_id, doc2_id):
+        for _ in range(60):
+            s_resp = client.get(f"/documents/{doc_id}/status")
+            if s_resp.status_code == 200 and s_resp.json()["status"] in ("COMPLETED", "FAILED"):
+                break
+            time.sleep(0.5)
 
     m1 = client.get(f"/documents/{doc1_id}").json()
     m2 = client.get(f"/documents/{doc2_id}").json()
@@ -194,3 +225,43 @@ def test_evaluator_metrics() -> None:
     assert res.precision_at_k == 0.5
     assert res.recall_at_k == 1.0
     assert res.mrr == 1.0
+
+
+def test_deterministic_chunk_id_generation() -> None:
+    """Verify deterministic 16-character SHA-256 chunk ID generation algorithm."""
+    import hashlib
+    from utils.chunker import generate_chunk_id
+
+    doc_id_1: str = "doc_0859bf759a26"
+    doc_id_2: str = "doc_999999999999"
+    page_1: int = 1
+    page_2: int = 2
+    idx_0: int = 0
+    idx_1: int = 1
+
+    id_base = generate_chunk_id(doc_id_1, page_1, idx_0)
+    id_same = generate_chunk_id(doc_id_1, page_1, idx_0)
+    id_diff_doc = generate_chunk_id(doc_id_2, page_1, idx_0)
+    id_diff_page = generate_chunk_id(doc_id_1, page_2, idx_0)
+    id_diff_idx = generate_chunk_id(doc_id_1, page_1, idx_1)
+
+    # 1. Same parameters produce exact same ID
+    assert id_base == id_same
+
+    # 2. Different document_id produces different ID
+    assert id_base != id_diff_doc
+
+    # 3. Different page produces different ID
+    assert id_base != id_diff_page
+
+    # 4. Different chunk_index produces different ID
+    assert id_base != id_diff_idx
+
+    # 5. Generated value equals sha256(f"{doc_id}:{page}:{index}").hexdigest()[:16]
+    expected_hash: str = hashlib.sha256(f"{doc_id_1}:{page_1}:{idx_0}".encode()).hexdigest()[:16]
+    assert id_base == expected_hash
+
+    # 6. ID length is exactly 16 hex characters
+    assert len(id_base) == 16
+    assert all(c in "0123456789abcdef" for c in id_base)
+

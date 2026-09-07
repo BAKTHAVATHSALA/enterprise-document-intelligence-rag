@@ -4,6 +4,7 @@ Splits structured PDF blocks (from Docling layout parser) into semantic chunks,
 preserving page numbers, section headers, entity lists, and source lineage.
 """
 
+import hashlib
 from typing import Optional
 from interfaces import ChunkInterface, ChunkMetadataInterface
 from utils.pdf_parser import ParsedPageBlock
@@ -12,6 +13,19 @@ from utils.logger import logger
 FUNC_CHUNKER: str = "create_structured_chunks"
 DEFAULT_CHUNK_SIZE: int = 1000
 DEFAULT_CHUNK_OVERLAP: int = 150
+
+
+def generate_chunk_id(document_id: str, page: int, chunk_index: int) -> str:
+    """Generate deterministic 16-character SHA-256 chunk identifier.
+
+    @param document_id: Unique document identifier string.
+    @param page: 1-indexed page number.
+    @param chunk_index: 0-indexed sequential chunk index within document.
+    @returns: 16-character hexadecimal SHA-256 hash string.
+    """
+    payload: str = f"{document_id}:{page}:{chunk_index}"
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
 
 
 def create_structured_chunks(
@@ -59,7 +73,11 @@ def create_structured_chunks(
             if not chunk_entities:
                 chunk_entities = entities[:5]
 
-            chunk_id = f"chunk_{document_id[:8]}_{chunk_counter}_{chunk_page}"
+            chunk_id = generate_chunk_id(
+                document_id=document_id,
+                page=chunk_page,
+                chunk_index=chunk_counter,
+            )
             chunks.append(
                 ChunkInterface(
                     chunk_id=chunk_id,
@@ -92,7 +110,11 @@ def create_structured_chunks(
         if not chunk_entities:
             chunk_entities = entities[:5]
 
-        chunk_id = f"chunk_{document_id[:8]}_{chunk_counter}_{chunk_page}"
+        chunk_id = generate_chunk_id(
+            document_id=document_id,
+            page=chunk_page,
+            chunk_index=chunk_counter,
+        )
         chunks.append(
             ChunkInterface(
                 chunk_id=chunk_id,
@@ -117,11 +139,24 @@ def create_semantic_chunks(
     text: str,
     document_id: str,
     source_filename: str,
-    entities: list[str],
+    page: int = 1,
+    section: str = "General",
+    entities: list[str] = [],
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> list[ChunkInterface]:
-    """Fallback sliding window chunker for unstructured text strings."""
+    """Fallback sliding window chunker for unstructured text strings.
+
+    @param text: Input text content.
+    @param document_id: Unique document identifier string.
+    @param source_filename: Source filename.
+    @param page: 1-indexed page number (default 1).
+    @param section: Section title string (default 'General').
+    @param entities: List of extracted entity names.
+    @param chunk_size: Target maximum chunk character length.
+    @param overlap: Sliding window character overlap.
+    @returns: List of ChunkInterface items.
+    """
     if not text or not text.strip():
         return []
 
@@ -135,7 +170,11 @@ def create_semantic_chunks(
     for para in paragraphs:
         if current_len + len(para) > chunk_size and current_para:
             chunk_text = "\n\n".join(current_para)
-            chunk_id = f"chunk_{document_id[:8]}_{chunk_idx}"
+            chunk_id = generate_chunk_id(
+                document_id=document_id,
+                page=page,
+                chunk_index=chunk_idx,
+            )
             chunks.append(
                 ChunkInterface(
                     chunk_id=chunk_id,
@@ -144,8 +183,8 @@ def create_semantic_chunks(
                     metadata=ChunkMetadataInterface(
                         document_id=document_id,
                         chunk_id=chunk_id,
-                        page=1,
-                        section="General",
+                        page=page,
+                        section=section,
                         source=source_filename,
                         entities=entities,
                     ),
@@ -160,7 +199,11 @@ def create_semantic_chunks(
 
     if current_para:
         chunk_text = "\n\n".join(current_para)
-        chunk_id = f"chunk_{document_id[:8]}_{chunk_idx}"
+        chunk_id = generate_chunk_id(
+            document_id=document_id,
+            page=page,
+            chunk_index=chunk_idx,
+        )
         chunks.append(
             ChunkInterface(
                 chunk_id=chunk_id,
@@ -169,8 +212,8 @@ def create_semantic_chunks(
                 metadata=ChunkMetadataInterface(
                     document_id=document_id,
                     chunk_id=chunk_id,
-                    page=1,
-                    section="General",
+                    page=page,
+                    section=section,
                     source=source_filename,
                     entities=entities,
                 ),

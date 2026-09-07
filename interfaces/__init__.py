@@ -2,11 +2,13 @@
 
 from interfaces.document_interface import (
     DocumentStatusEnum,
+    IngestionStageEnum,
     EntityInterface,
     PIIMatchInterface,
     ChunkMetadataInterface,
     ChunkInterface,
     DocumentMetadataInterface,
+    IngestionJobInterface,
     DocumentStatusInterface,
 )
 from interfaces.retrieval_interface import (
@@ -18,6 +20,8 @@ from interfaces.retrieval_interface import (
 from interfaces.query_interface import (
     QueryRequestInterface,
     CitationInterface,
+    CitationValidationStatusEnum,
+    CitationValidationSummaryInterface,
     QueryResponseInterface,
 )
 from interfaces.config_interface import (
@@ -29,11 +33,13 @@ from interfaces.embedding_interface import (
 
 __all__ = [
     "DocumentStatusEnum",
+    "IngestionStageEnum",
     "EntityInterface",
     "PIIMatchInterface",
     "ChunkMetadataInterface",
     "ChunkInterface",
     "DocumentMetadataInterface",
+    "IngestionJobInterface",
     "DocumentStatusInterface",
     "RetrievalSourceEnum",
     "CandidateChunkInterface",
@@ -41,8 +47,9 @@ __all__ = [
     "RerankedCandidateInterface",
     "QueryRequestInterface",
     "CitationInterface",
+    "CitationValidationStatusEnum",
+    "CitationValidationSummaryInterface",
     "QueryResponseInterface",
     "AppConfigInterface",
     "EmbeddingProviderInterface",
 ]
-

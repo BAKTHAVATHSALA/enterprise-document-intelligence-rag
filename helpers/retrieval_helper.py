@@ -19,12 +19,45 @@ from data_access import (
     query_graph_store,
 )
 from utils.logger import logger
+from utils.tracing import trace_step
 
 FUNC_HYBRID_RETRIEVAL: str = "execute_hybrid_retrieval"
 FUNC_FUSE_RRF: str = "apply_rrf_fusion"
 FUNC_RERANK: str = "rerank_candidates"
 
 
+def _extract_rrf_metadata(args, kwargs, result, error):
+    c_lists = args[0] if args else kwargs.get("candidate_lists", [])
+    k_const = args[1] if len(args) > 1 else kwargs.get("k_constant", RRF_K_CONSTANT)
+    channels_count = len(c_lists) if isinstance(c_lists, list) else 0
+    total_in = sum(len(cl) for cl in c_lists if isinstance(cl, list)) if channels_count else 0
+    meta = {
+        "k_constant": k_const,
+        "channels_count": channels_count,
+        "total_input_candidates": total_in,
+    }
+    if result is not None:
+        meta["fused_count"] = len(result)
+    return meta
+
+
+def _extract_rerank_metadata(args, kwargs, result, error):
+    fused = args[0] if args else kwargs.get("fused_candidates", [])
+    query = args[1] if len(args) > 1 else kwargs.get("query_text", "")
+    top_k = args[2] if len(args) > 2 else kwargs.get("top_k", DEFAULT_TOP_K)
+    meta = {
+        "model_name": "BAAI/bge-reranker-base",
+        "top_k": top_k,
+        "candidates_in": len(fused) if isinstance(fused, list) else 0,
+        "query_length": len(query) if isinstance(query, str) else 0,
+    }
+    if result is not None:
+        meta["candidates_out"] = len(result)
+        meta["top_score"] = result[0].relevance_score if result and hasattr(result[0], "relevance_score") else None
+    return meta
+
+
+@trace_step(name="rrf_fusion", run_type="chain", extract_metadata=_extract_rrf_metadata)
 def apply_rrf_fusion(
     candidate_lists: list[list[CandidateChunkInterface]],
     k_constant: int = RRF_K_CONSTANT,
@@ -84,44 +117,21 @@ def apply_rrf_fusion(
     return fused_results
 
 
+@trace_step(name="reranking", run_type="chain", extract_metadata=_extract_rerank_metadata)
 def rerank_candidates(
     fused_candidates: list[FusedCandidateInterface],
     query_text: str,
     top_k: int = DEFAULT_TOP_K,
 ) -> list[RerankedCandidateInterface]:
-    """Re-score fused candidate evidence using query relevance and multi-source coverage.
+    """Re-score fused candidate evidence using BAAI/bge-reranker-base CrossEncoder neural model.
 
     @param fused_candidates: Input fused candidate list.
     @param query_text: User question string.
     @param top_k: Final top_k candidates count.
-    @returns: Ordered list of RerankedCandidateInterface objects.
+    @returns: Ordered list of RerankedCandidateInterface objects sorted by relevance score.
     """
-    if not fused_candidates:
-        return []
-
-    query_words: set[str] = {w.lower() for w in query_text.split()}
-    reranked: list[RerankedCandidateInterface] = []
-
-    for candidate in fused_candidates:
-        text_words: set[str] = {w.lower() for w in candidate.chunk.text.split()}
-        overlap_count: int = len(query_words.intersection(text_words))
-        overlap_boost: float = (overlap_count / float(len(query_words) or 1)) * 0.2
-        multi_source_boost: float = (len(candidate.sources) - 1) * 0.1
-
-        final_score: float = candidate.rrf_score + overlap_boost + multi_source_boost
-        reranked.append(
-            RerankedCandidateInterface(
-                chunk=candidate.chunk,
-                rerank_score=round(final_score, 4),
-                fused_score=candidate.rrf_score,
-            )
-        )
-
-    reranked.sort(key=lambda x: x.rerank_score, reverse=True)
-    selected_hits: list[RerankedCandidateInterface] = reranked[:top_k]
-    
-    logger.info(FUNC_RERANK, f"Reranked {len(fused_candidates)} fused candidates to top {len(selected_hits)}.")
-    return selected_hits
+    from data_access import rerank_fused_candidates
+    return rerank_fused_candidates(fused_candidates=fused_candidates, query_text=query_text, top_k=top_k)
 
 
 def execute_hybrid_retrieval(

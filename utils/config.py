@@ -31,7 +31,14 @@ def get_config() -> AppConfigInterface:
         neo4j_password=os.getenv("NEO4J_PASSWORD", "password"),
         langsmith_tracing=os.getenv("LANGSMITH_TRACING", "false").lower() == "true",
         langsmith_api_key=os.getenv("LANGSMITH_API_KEY", ""),
+        langsmith_project=os.getenv("LANGSMITH_PROJECT", "distributed-rag"),
+        postgres_host=os.getenv("PGHOST", ""),
+        postgres_db=os.getenv("PGDATABASE", "neondb"),
+        postgres_user=os.getenv("PGUSER", ""),
+        postgres_password=os.getenv("PGPASSWORD", ""),
+        database_url=os.getenv("DATABASE_URL", ""),
     )
+
     
     logger.info(FUNC_GET_CONFIG, f"Configuration loaded successfully for environment: {config.env}")
     return config

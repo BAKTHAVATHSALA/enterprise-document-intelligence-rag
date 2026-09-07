@@ -15,11 +15,29 @@ from interfaces.query_interface import (
 from interfaces.retrieval_interface import RerankedCandidateInterface
 from helpers.retrieval_helper import execute_hybrid_retrieval
 from helpers.generation_helper import generate_grounded_answer, GenerationResult
-from helpers.citation_helper import build_citations, validate_citations
+from helpers.citation_helper import build_citations, validate_citations, extract_inline_citations
 from utils.logger import logger
+from utils.tracing import trace_step
 
 FUNC_EXECUTE_QUERY: str = "execute_query_workflow"
 FUNC_VALIDATE_QUERY: str = "validate_query_security"
+
+
+def _extract_query_metadata(args, kwargs, result, error):
+    req = args[0] if args else kwargs.get("request")
+    meta = {
+        "query_id": getattr(req, "query_id", None) or f"query_{hash(req.question if req else '') & 0xffffffff:08x}",
+        "top_k": req.top_k if req else None,
+        "document_ids": req.document_ids if req else None,
+        "question_length": len(req.question) if req and hasattr(req, "question") else 0,
+    }
+    if result:
+        meta["confidence_score"] = result.confidence_score
+        meta["total_citations"] = len(result.citations)
+        if result.validation_summary:
+            meta["valid_citations"] = result.validation_summary.valid_count
+            meta["is_fully_validated"] = result.validation_summary.is_fully_validated
+    return meta
 
 # Prompt Injection Defense Patterns
 PROMPT_INJECTION_PATTERNS: list[str] = [
@@ -51,6 +69,7 @@ def validate_query_security(question: str) -> None:
             raise ValueError("Query rejected due to security policy violation.")
 
 
+@trace_step(name="query_pipeline", run_type="chain", extract_metadata=_extract_query_metadata)
 def execute_query_workflow(
     request: QueryRequestInterface,
 ) -> QueryResponseInterface:
@@ -81,8 +100,10 @@ def execute_query_workflow(
         )
 
         # 4. Citation Extraction & Validation
-        raw_citations: list[CitationInterface] = build_citations(evidence_list)
-        validated_citations: list[CitationInterface] = validate_citations(
+        inline_citations: list[CitationInterface] = extract_inline_citations(gen_result.answer)
+        raw_citations: list[CitationInterface] = inline_citations if inline_citations else build_citations(evidence_list)
+        
+        validated_citations, val_summary = validate_citations(
             citations=raw_citations,
             evidence_list=evidence_list,
         )
@@ -96,6 +117,7 @@ def execute_query_workflow(
             question=request.question,
             answer=gen_result.answer,
             citations=validated_citations,
+            validation_summary=val_summary,
             confidence_score=gen_result.confidence_score,
             processing_time_ms=latency_ms,
         )
