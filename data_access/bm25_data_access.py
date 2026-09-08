@@ -232,3 +232,21 @@ def query_bm25_index(
     logger.info(FUNC_QUERY_BM25, f"Retrieved {len(candidates)} candidates from BM25 keyword index.")
     return candidates
 
+
+def clear_all_bm25_index() -> int:
+    """Clear all entries in memory BM25 index.
+    
+    WARNING: For one-time development data cleanup ONLY. Never call from normal delete flow.
+    """
+    global _AVG_DOC_LENGTH
+    total = len(_BM25_DOC_STORE)
+    _BM25_DOC_STORE.clear()
+    _BM25_DOC_TOKENS.clear()
+    _BM25_DOC_FREQS.clear()
+    _BM25_DOC_LENGTHS.clear()
+    _BM25_DF.clear()
+    _AVG_DOC_LENGTH = 0.0
+    logger.info("clear_all_bm25_index", "Flushed all entries from BM25 in-memory index.")
+    return total
+
+

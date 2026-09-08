@@ -683,10 +683,107 @@ def delete_document_from_db(document_id: str) -> bool:
         with conn:
             with conn.cursor() as cur:
                 cur.execute(query, (document_id,))
-        logger.info(FUNC_DELETE_DOC, f"Deleted document {document_id} from PostgreSQL database.")
-        return True
+                deleted = cur.rowcount > 0
+        logger.info(FUNC_DELETE_DOC, f"Deleted document {document_id} from PostgreSQL database (found={deleted}).")
+        return deleted
     except Exception as exc:
         logger.error(FUNC_DELETE_DOC, f"Error deleting document {document_id} from PostgreSQL", exc=exc)
         return False
+    finally:
+        conn.close()
+
+
+def clear_all_db_data() -> dict[str, int]:
+    """Delete all document, chunk, and job records from PostgreSQL database and clear local memory stores.
+    
+    WARNING: For one-time development data cleanup ONLY. Never call from normal delete flow.
+    """
+    clear_local_job_store()
+    conn = get_db_connection()
+    if conn is None:
+        return {"documents": 0, "chunks": 0, "ingestion_jobs": 0}
+
+    counts = {"documents": 0, "chunks": 0, "ingestion_jobs": 0}
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM documents;")
+                counts["documents"] = cur.rowcount
+        logger.info("clear_all_db_data", "Flushed all documents, chunks, and ingestion jobs from PostgreSQL database.")
+    except Exception as exc:
+        logger.error("clear_all_db_data", "Error flushing PostgreSQL database", exc=exc)
+    finally:
+        conn.close()
+
+    return counts
+
+
+
+def list_documents_from_db(tenant_id: Optional[str] = None) -> list[dict]:
+    """Retrieve all document records joined with their latest ingestion job details from PostgreSQL.
+
+    @param tenant_id: Optional tenant isolation filter.
+    @returns: List of dictionary representations of documents with status and progress.
+    """
+    conn = get_db_connection()
+    if conn is None:
+        return []
+
+    if tenant_id:
+        query = """
+        SELECT d.document_id, d.tenant_id, d.title, d.source_filename, d.total_pages,
+               d.total_chunks, d.status, d.error_message, d.created_at,
+               j.job_id, j.stage, j.progress_percent
+        FROM documents d
+        LEFT JOIN LATERAL (
+            SELECT job_id, stage, progress_percent
+            FROM ingestion_jobs
+            WHERE document_id = d.document_id
+            ORDER BY created_at DESC LIMIT 1
+        ) j ON true
+        WHERE d.tenant_id = %s
+        ORDER BY d.created_at DESC;
+        """
+        params = (tenant_id,)
+    else:
+        query = """
+        SELECT d.document_id, d.tenant_id, d.title, d.source_filename, d.total_pages,
+               d.total_chunks, d.status, d.error_message, d.created_at,
+               j.job_id, j.stage, j.progress_percent
+        FROM documents d
+        LEFT JOIN LATERAL (
+            SELECT job_id, stage, progress_percent
+            FROM ingestion_jobs
+            WHERE document_id = d.document_id
+            ORDER BY created_at DESC LIMIT 1
+        ) j ON true
+        ORDER BY d.created_at DESC;
+        """
+        params = ()
+
+    try:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            documents = []
+            for row in rows:
+                documents.append({
+                    "document_id": row["document_id"],
+                    "tenant_id": row["tenant_id"],
+                    "title": row["title"],
+                    "source_filename": row["source_filename"],
+                    "total_pages": row["total_pages"],
+                    "total_chunks": row["total_chunks"],
+                    "status": row["status"],
+                    "stage": row["stage"] if row.get("stage") else ("COMPLETED" if row["status"] == "COMPLETED" else "QUEUED"),
+                    "progress_percent": float(row["progress_percent"]) if row.get("progress_percent") is not None else (100.0 if row["status"] == "COMPLETED" else 0.0),
+                    "error_message": row["error_message"],
+                    "created_at": str(row["created_at"]),
+                    "job_id": row.get("job_id"),
+                })
+            return documents
+    except Exception as exc:
+        logger.error("list_documents_from_db", f"Error listing documents from PostgreSQL: {exc}", exc=exc)
+        return []
     finally:
         conn.close()

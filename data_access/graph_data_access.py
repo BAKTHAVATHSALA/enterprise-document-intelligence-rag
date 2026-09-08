@@ -438,3 +438,83 @@ def query_graph_store(
     except Exception as exc:
         logger.error(FUNC_QUERY_GRAPH, f"Error executing Cypher graph retrieval query", exc=exc)
         return []
+
+
+FUNC_DELETE_GRAPH: str = "delete_graph_nodes_by_document_id"
+
+
+def delete_graph_nodes_by_document_id(document_id: str) -> int:
+    """Delete Document, Chunk, and document-scoped Entity nodes and relationships for document_id.
+
+    @param document_id: Target document identifier string.
+    @returns: Count of deleted nodes/relationships.
+    """
+    if not document_id:
+        return 0
+
+    deleted_count = 0
+
+    # 1. Clean local mock graph store
+    chunks_to_remove = [cid for cid, chk in _CHUNK_STORE.items() if getattr(chk, "document_id", None) == document_id]
+    for cid in chunks_to_remove:
+        _CHUNK_STORE.pop(cid, None)
+        deleted_count += 1
+
+    keys_to_remove = [
+        key for key, doc in _ENTITY_DOC_MAP.items()
+        if doc == document_id or key.startswith(f"{document_id}_")
+    ]
+    for key in keys_to_remove:
+        _ENTITY_DOC_MAP.pop(key, None)
+        _ENTITY_NAMES_MAP.pop(key, None)
+        _GRAPH_ENTITIES.pop(key, None)
+        _ENTITY_RELATIONSHIPS.pop(key, None)
+        deleted_count += 1
+
+    # Clean orphaned entity keys in relationship sets
+    for k, rel_set in list(_ENTITY_RELATIONSHIPS.items()):
+        rel_set.difference_update(keys_to_remove)
+
+    # 2. Clean live Neo4j database if driver available
+    driver = get_neo4j_driver()
+    if driver is not None:
+        cypher_delete = """
+        MATCH (d:Document {document_id: $doc_id})
+        OPTIONAL MATCH (c:Chunk {document_id: $doc_id})
+        OPTIONAL MATCH (e:Entity) WHERE e.document_id = $doc_id OR e.entity_key STARTS WITH ($doc_id + '_')
+        DETACH DELETE d, c, e
+        """
+        try:
+            with driver.session() as session:
+                session.run(cypher_delete, doc_id=document_id)
+            logger.info(FUNC_DELETE_GRAPH, f"Deleted Neo4j graph nodes and relationships for document '{document_id}'.")
+            return max(deleted_count, 1)
+        except Exception as exc:
+            logger.error(FUNC_DELETE_GRAPH, f"Error deleting Neo4j graph nodes for document '{document_id}'", exc=exc)
+
+    return deleted_count
+
+
+def clear_all_graph_nodes() -> int:
+    """Clear all nodes and relationships across Neo4j database and local mock graph store.
+    
+    WARNING: For one-time development data cleanup ONLY. Never call from normal delete flow.
+    """
+    total = len(_CHUNK_STORE) + len(_ENTITY_DOC_MAP)
+    _CHUNK_STORE.clear()
+    _GRAPH_ENTITIES.clear()
+    _ENTITY_RELATIONSHIPS.clear()
+    _ENTITY_NAMES_MAP.clear()
+    _ENTITY_DOC_MAP.clear()
+
+    driver = get_neo4j_driver()
+    if driver is not None:
+        try:
+            with driver.session() as session:
+                session.run("MATCH (n) DETACH DELETE n")
+            logger.info("clear_all_graph_nodes", "Flushed all nodes and relationships from Neo4j database.")
+        except Exception as exc:
+            logger.error("clear_all_graph_nodes", "Error clearing Neo4j database", exc=exc)
+
+    return total
+

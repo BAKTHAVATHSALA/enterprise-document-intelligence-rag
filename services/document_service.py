@@ -4,6 +4,7 @@ Coordinates asynchronous PDF document ingestion workflows, queue dispatching,
 cancellation handling, storage indexing side effects, and status tracking.
 """
 
+import asyncio
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -26,8 +27,11 @@ from services.queue_service import (
 )
 from data_access import (
     upsert_vector_chunks,
+    delete_vector_chunks_by_document_id,
     index_bm25_chunks,
+    evict_document_from_bm25,
     upsert_graph_nodes,
+    delete_graph_nodes_by_document_id,
     save_document_to_db,
     save_chunks_to_db,
     update_document_status_in_db,
@@ -37,6 +41,7 @@ from data_access import (
     update_job_progress_in_db,
     get_ingestion_job_from_db,
     get_latest_job_for_document_from_db,
+    delete_document_from_db,
 )
 from utils.logger import logger, get_correlation_id
 
@@ -46,6 +51,8 @@ FUNC_CREATE_PDF_JOB: str = "create_pdf_ingestion_job"
 FUNC_GET_METADATA: str = "get_document_metadata"
 FUNC_GET_STATUS: str = "get_document_status"
 FUNC_CANCEL_JOB: str = "cancel_ingestion_job"
+FUNC_DELETE_DOC: str = "delete_document"
+
 
 # Fallback in-memory registries for offline testing
 _DOC_METADATA_STORE: dict[str, DocumentMetadataInterface] = {}
@@ -91,7 +98,7 @@ async def enqueue_pdf_ingestion_job(
         total_chunks=0,
         created_at=now_iso,
     )
-    save_document_to_db(initial_meta)
+    await asyncio.to_thread(save_document_to_db, initial_meta)
     _DOC_METADATA_STORE[doc_id] = initial_meta
 
     # 2. Initialize persistent IngestionJob record in PostgreSQL
@@ -107,7 +114,7 @@ async def enqueue_pdf_ingestion_job(
         correlation_id=active_corr,
         created_at=now_iso,
     )
-    save_ingestion_job_to_db(job_record)
+    await asyncio.to_thread(save_ingestion_job_to_db, job_record)
 
     # 3. Build status object
     status_obj: DocumentStatusInterface = DocumentStatusInterface(
@@ -162,7 +169,7 @@ async def cancel_ingestion_job(
     target_doc_id: Optional[str] = document_id
 
     if not target_job_id and target_doc_id:
-        latest_job = get_latest_job_for_document_from_db(target_doc_id)
+        latest_job = await asyncio.to_thread(get_latest_job_for_document_from_db, target_doc_id)
         if latest_job:
             target_job_id = latest_job.job_id
         else:
@@ -178,7 +185,8 @@ async def cancel_ingestion_job(
 
     # Update DB status
     now_iso = datetime.now(timezone.utc).isoformat()
-    update_job_progress_in_db(
+    await asyncio.to_thread(
+        update_job_progress_in_db,
         job_id=target_job_id,
         status=DocumentStatusEnum.CANCELLED,
         stage=IngestionStageEnum.CANCELLED,
@@ -188,12 +196,19 @@ async def cancel_ingestion_job(
     )
 
     if target_doc_id:
-        update_document_status_in_db(target_doc_id, DocumentStatusEnum.CANCELLED, 0, "Job cancelled by user request.")
+        await asyncio.to_thread(
+            update_document_status_in_db,
+            target_doc_id,
+            DocumentStatusEnum.CANCELLED,
+            0,
+            "Job cancelled by user request.",
+        )
         if target_doc_id in _DOC_STATUS_STORE:
             _DOC_STATUS_STORE[target_doc_id].status = DocumentStatusEnum.CANCELLED
 
     logger.info(FUNC_CANCEL_JOB, f"Successfully requested cancellation for job {target_job_id}")
     return True
+
 
 
 def get_ingestion_job(job_id: str) -> Optional[IngestionJobInterface]:
@@ -326,3 +341,83 @@ def get_document_status(document_id: str) -> Optional[DocumentStatusInterface]:
         return db_status
 
     return _DOC_STATUS_STORE.get(document_id)
+
+
+def list_all_documents(tenant_id: Optional[str] = None) -> list[dict]:
+    """Retrieve list of all documents with status, stage, progress, and metadata."""
+    from data_access import list_documents_from_db
+    db_docs = list_documents_from_db(tenant_id)
+    if db_docs:
+        return db_docs
+
+    # Fallback to local memory store
+    results = []
+    for doc_id, meta in _DOC_METADATA_STORE.items():
+        if tenant_id and meta.tenant_id != tenant_id:
+            continue
+        status_entry = _DOC_STATUS_STORE.get(doc_id)
+        results.append({
+            "document_id": doc_id,
+            "tenant_id": meta.tenant_id,
+            "title": meta.title,
+            "source_filename": meta.source_filename,
+            "total_pages": meta.total_pages,
+            "total_chunks": meta.total_chunks,
+            "status": status_entry.status.value if status_entry else "COMPLETED",
+            "stage": status_entry.stage.value if status_entry and status_entry.stage else ("COMPLETED" if (status_entry and status_entry.status == DocumentStatusEnum.COMPLETED) else "QUEUED"),
+            "progress_percent": status_entry.progress_percent if status_entry and status_entry.progress_percent is not None else 100.0,
+            "error_message": status_entry.error_message if status_entry else None,
+            "created_at": meta.created_at,
+            "job_id": status_entry.job_id if status_entry else None,
+        })
+    return sorted(results, key=lambda x: x.get("created_at", ""), reverse=True)
+
+
+async def delete_document(document_id: str) -> bool:
+    """Safely and atomically delete a document and all of its associated data across all stores.
+
+    Document-scoped deletion:
+    1. First requests cooperative cancellation of any active/queued ingestion job.
+    2. Removes vector embeddings from Pinecone and mock vector store.
+    3. Removes Document/Chunk/Entity nodes from Neo4j graph store.
+    4. Evicts chunks from in-memory BM25 index.
+    5. Removes document, chunks, and ingestion jobs from PostgreSQL database.
+    6. Removes local fallback memory store entries.
+
+    @param document_id: Unique document identifier string.
+    @returns: True if document was found and deleted, False otherwise.
+    """
+    if not document_id:
+        return False
+
+    meta = get_document_metadata(document_id)
+    status_entry = get_document_status(document_id)
+    if not meta and not status_entry:
+        logger.warning(FUNC_DELETE_DOC, f"Cannot delete document '{document_id}': Document not found.")
+        return False
+
+    # 1. Cooperative cancellation if job is active/queued
+    try:
+        await cancel_ingestion_job(document_id=document_id)
+    except Exception as exc:
+        logger.warning(FUNC_DELETE_DOC, f"Cancellation attempt during delete for '{document_id}' issued warning: {exc}")
+
+    # 2. Delete document vector chunks from Pinecone
+    delete_vector_chunks_by_document_id(document_id)
+
+    # 3. Delete document nodes & relationships from Neo4j
+    delete_graph_nodes_by_document_id(document_id)
+
+    # 4. Evict document chunks from BM25 index
+    evict_document_from_bm25(document_id)
+
+    # 5. Delete document record from PostgreSQL (cascades to chunks & ingestion_jobs)
+    db_deleted = delete_document_from_db(document_id)
+
+    # 6. Evict from local fallback memory store
+    _DOC_METADATA_STORE.pop(document_id, None)
+    _DOC_STATUS_STORE.pop(document_id, None)
+
+    logger.info(FUNC_DELETE_DOC, f"Successfully executed document-scoped delete for '{document_id}' (db_deleted={db_deleted}).")
+    return True
+

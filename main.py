@@ -11,6 +11,8 @@ Integrates:
 - Cooperative cancellation endpoints (/documents/{id}/cancel and /jobs/{id}/cancel).
 """
 
+import asyncio
+import os
 import time
 import uuid
 from typing import Optional
@@ -18,6 +20,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from interfaces import (
@@ -32,12 +35,15 @@ from services import (
     create_pdf_ingestion_job,
     enqueue_pdf_ingestion_job,
     cancel_ingestion_job,
+    delete_document,
     get_ingestion_job,
     get_document_metadata,
     get_document_status,
+    list_all_documents,
     execute_query_workflow,
     get_job_queue,
 )
+
 from workers.ingestion_worker import IngestionWorker
 from data_access import ensure_db_schema, init_bm25_from_db
 from utils.logger import (
@@ -66,7 +72,9 @@ FUNC_API_GET_META: str = "api_get_document_metadata"
 FUNC_API_GET_STATUS: str = "api_get_document_status"
 FUNC_API_GET_JOB: str = "api_get_job"
 FUNC_API_CANCEL: str = "api_cancel_job"
+FUNC_API_DELETE: str = "api_delete_document"
 FUNC_API_QUERY: str = "api_execute_query"
+
 
 
 @asynccontextmanager
@@ -221,6 +229,12 @@ def health_check() -> dict[str, str]:
     return {"status": "ok", "service": "Hybrid RAG Platform API"}
 
 
+@app.get("/documents")
+async def list_documents() -> list[dict]:
+    """Return list of all indexed documents with current status, stage, and chunk metrics."""
+    return await asyncio.to_thread(list_all_documents)
+
+
 @app.post("/documents", response_model=DocumentStatusInterface, status_code=status.HTTP_202_ACCEPTED)
 async def create_document_job(
     file: UploadFile = File(..., description="Uploaded PDF file document"),
@@ -284,10 +298,10 @@ async def create_document_job(
 
 
 @app.get("/documents/{document_id}", response_model=DocumentMetadataInterface)
-def read_document_metadata(document_id: str) -> DocumentMetadataInterface:
+async def read_document_metadata(document_id: str) -> DocumentMetadataInterface:
     """Return document metadata for given document_id."""
     set_document_id(document_id)
-    meta: Optional[DocumentMetadataInterface] = get_document_metadata(document_id)
+    meta: Optional[DocumentMetadataInterface] = await asyncio.to_thread(get_document_metadata, document_id)
     if not meta:
         logger.warning(FUNC_API_GET_META, f"Document not found: {document_id}", document_id=document_id)
         raise DocumentNotFoundError(f"Document '{document_id}' not found", document_id=document_id)
@@ -296,10 +310,10 @@ def read_document_metadata(document_id: str) -> DocumentMetadataInterface:
 
 
 @app.get("/documents/{document_id}/status", response_model=DocumentStatusInterface)
-def read_document_status(document_id: str) -> DocumentStatusInterface:
+async def read_document_status(document_id: str) -> DocumentStatusInterface:
     """Return processing job status for given document_id."""
     set_document_id(document_id)
-    job_status: Optional[DocumentStatusInterface] = get_document_status(document_id)
+    job_status: Optional[DocumentStatusInterface] = await asyncio.to_thread(get_document_status, document_id)
     if not job_status:
         logger.warning(FUNC_API_GET_STATUS, f"Document status not found: {document_id}", document_id=document_id)
         raise DocumentNotFoundError(f"Document '{document_id}' not found", document_id=document_id)
@@ -308,9 +322,9 @@ def read_document_status(document_id: str) -> DocumentStatusInterface:
 
 
 @app.get("/jobs/{job_id}", response_model=IngestionJobInterface)
-def read_job_details(job_id: str) -> IngestionJobInterface:
+async def read_job_details(job_id: str) -> IngestionJobInterface:
     """Return ingestion job details for given job_id."""
-    job: Optional[IngestionJobInterface] = get_ingestion_job(job_id)
+    job: Optional[IngestionJobInterface] = await asyncio.to_thread(get_ingestion_job, job_id)
     if not job:
         logger.warning(FUNC_API_GET_JOB, f"Job not found: {job_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job '{job_id}' not found")
@@ -318,7 +332,21 @@ def read_job_details(job_id: str) -> IngestionJobInterface:
     return job
 
 
+@app.delete("/documents/{document_id}", status_code=status.HTTP_200_OK)
+async def delete_document_endpoint(document_id: str) -> dict[str, str]:
+    """Delete specified document and all document-scoped chunks, vectors, graph nodes, and BM25 entries."""
+    set_document_id(document_id)
+    success: bool = await delete_document(document_id=document_id)
+    if not success:
+        logger.warning(FUNC_API_DELETE, f"Document not found for deletion: {document_id}", document_id=document_id)
+        raise DocumentNotFoundError(f"Document '{document_id}' not found", document_id=document_id)
+
+    logger.info(FUNC_API_DELETE, f"Successfully deleted document: {document_id}", document_id=document_id)
+    return {"status": "deleted", "document_id": document_id}
+
+
 @app.post("/documents/{document_id}/cancel", status_code=status.HTTP_200_OK)
+
 async def cancel_document_job(document_id: str) -> dict[str, str]:
     """Cancel ongoing or queued document ingestion job by document_id."""
     success: bool = await cancel_ingestion_job(document_id=document_id)
@@ -369,3 +397,9 @@ def query_rag_pipeline(payload: QueryRequestInterface) -> QueryResponseInterface
     except Exception as exc:
         logger.error(FUNC_API_QUERY, "Unhandled error during query pipeline execution", exc=exc, query_id=query_id)
         raise GenerationError(f"Query pipeline failure: {exc}")
+
+
+# Optional local integrated frontend static hosting
+_FRONTEND_DIST: str = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+if os.path.isdir(_FRONTEND_DIST):
+    app.mount("/", StaticFiles(directory=_FRONTEND_DIST, html=True), name="frontend")

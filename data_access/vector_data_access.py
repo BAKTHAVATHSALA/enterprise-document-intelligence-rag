@@ -340,3 +340,80 @@ def query_vector_store(
 
     logger.info(FUNC_QUERY_VECTORS, f"Retrieved {len(candidates)} candidates from Pinecone index '{config.pinecone_index_name}'.")
     return candidates
+
+
+FUNC_DELETE_VECTORS: str = "delete_vector_chunks_by_document_id"
+
+
+def delete_vector_chunks_by_document_id(document_id: str) -> int:
+    """Delete all vector embeddings belonging to a specific document_id.
+
+    @param document_id: Unique document identifier string.
+    @returns: Total count of deleted vectors from local mock or 1 if deleted from Pinecone.
+    """
+    if not document_id:
+        return 0
+
+    deleted_count = 0
+
+    # 1. Clear from local mock store
+    to_delete = [
+        cid for cid, (chunk, _) in _LOCAL_MOCK_VECTOR_STORE.items()
+        if getattr(chunk, "document_id", None) == document_id or
+        getattr(getattr(chunk, "metadata", None), "document_id", None) == document_id
+    ]
+    for cid in to_delete:
+        _LOCAL_MOCK_VECTOR_STORE.pop(cid, None)
+        deleted_count += 1
+
+    # 2. Delete from Pinecone if configured
+    config = get_config()
+    if config.pinecone_api_key or os.getenv("PINECONE_API_KEY"):
+        try:
+            active_provider = get_embedding_provider()
+            index = get_pinecone_index(
+                api_key=config.pinecone_api_key or os.getenv("PINECONE_API_KEY", ""),
+                index_name=config.pinecone_index_name,
+                dimension=active_provider.get_dimension(),
+                cloud=config.pinecone_cloud,
+                region=config.pinecone_region,
+            )
+            index.delete(filter={"document_id": {"$eq": document_id}})
+            logger.info(FUNC_DELETE_VECTORS, f"Deleted vectors for document {document_id} from Pinecone index.")
+            return max(deleted_count, 1)
+        except Exception as exc:
+            if "404" in str(exc) or "NotFound" in type(exc).__name__:
+                logger.info(FUNC_DELETE_VECTORS, f"No Pinecone vector namespace/vectors found for document '{document_id}'.")
+            else:
+                logger.warning(FUNC_DELETE_VECTORS, f"Pinecone vector delete warning for document '{document_id}': {exc}")
+
+    return deleted_count
+
+
+
+def clear_all_vector_chunks() -> int:
+    """Clear all vector embeddings across Pinecone index and local mock store.
+    
+    WARNING: For one-time development data cleanup ONLY. Never call from normal delete flow.
+    """
+    count = len(_LOCAL_MOCK_VECTOR_STORE)
+    _LOCAL_MOCK_VECTOR_STORE.clear()
+
+    config = get_config()
+    if config.pinecone_api_key or os.getenv("PINECONE_API_KEY"):
+        try:
+            active_provider = get_embedding_provider()
+            index = get_pinecone_index(
+                api_key=config.pinecone_api_key or os.getenv("PINECONE_API_KEY", ""),
+                index_name=config.pinecone_index_name,
+                dimension=active_provider.get_dimension(),
+                cloud=config.pinecone_cloud,
+                region=config.pinecone_region,
+            )
+            index.delete(delete_all=True)
+            logger.info("clear_all_vector_chunks", "Flushed all vectors from Pinecone index.")
+        except Exception as exc:
+            logger.error("clear_all_vector_chunks", "Error clearing Pinecone index", exc=exc)
+
+    return count
+

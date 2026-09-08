@@ -6,6 +6,7 @@ outside the HTTP request lifecycle.
 Implements:
 - Granular stage transitions: PARSING -> PII_REDACTION -> ENTITY_EXTRACTION -> CHUNKING -> EMBEDDING -> INDEXING -> COMPLETED
 - Real stage progress percentage tracking (0% to 100%)
+- Non-blocking event loop responsiveness via clean stage-grouped thread offloading (asyncio.to_thread)
 - Cooperative cancellation checks between stages
 - Statuses: PENDING, PROCESSING, COMPLETED, PARTIAL, FAILED, CANCELLED
 - Bounded exponential retry for transient provider failures (does not retry permanent validation errors)
@@ -35,6 +36,7 @@ from data_access import (
     upsert_vector_chunks,
     index_bm25_chunks,
     upsert_graph_nodes,
+    get_document_metadata_from_db,
 )
 from utils.pdf_parser import parse_pdf_document, ParsedDocumentResult, ParsedPageBlock
 from utils.pii_redactor import redact_pii, RedactionResult
@@ -103,10 +105,16 @@ class IngestionWorker:
     async def process_job(self, payload: IngestionJobPayload) -> DocumentStatusEnum:
         """Process a single document ingestion job through all pipeline stages.
 
+        Thread Offloading Strategy:
+        ALL synchronous work (DB reads, DB writes, CPU-heavy stage helpers) is offloaded
+        to background threads via asyncio.to_thread(). The event loop only awaits results.
+        Cancellation checks and progress updates are grouped into synchronous helpers
+        (_is_cancelled_sync, _advance_stage_sync, etc.) and offloaded as logical units,
+        rather than wrapping every individual DB call separately.
+
         @param payload: IngestionJobPayload dequeued from queue.
         @returns: Final DocumentStatusEnum outcome.
         """
-        # Cooperative yield to ensure event loop dispatches pending responses
         await asyncio.sleep(0.01)
 
         job_id = payload.job_id
@@ -125,103 +133,85 @@ class IngestionWorker:
             status="started",
         )
 
-        # Check early cancellation
-        if self.queue.is_cancelled(job_id):
-            return self._handle_cancelled(job_id, doc_id, 0.0)
+        # Check early cancellation (offloaded — DB read)
+        if await asyncio.to_thread(self._is_cancelled_sync, job_id, doc_id):
+            return await asyncio.to_thread(self._handle_cancelled, job_id, doc_id, 0.0)
 
-        # Mark PROCESSING
-        update_job_progress_in_db(
-            job_id=job_id,
-            status=DocumentStatusEnum.PROCESSING,
-            stage=IngestionStageEnum.PARSING,
-            progress_percent=10.0,
-            started_at=now_iso,
-        )
-        update_document_status_in_db(doc_id, DocumentStatusEnum.PROCESSING, 0)
+        # Mark PROCESSING (offloaded — DB writes)
+        await asyncio.to_thread(self._begin_processing_sync, job_id, doc_id, now_iso)
 
         chunks: list[ChunkInterface] = []
         entities: list[EntityInterface] = []
         metadata: Optional[DocumentMetadataInterface] = None
 
         try:
-            # Stage 1: PARSING (15%)
+            # Stage 1: PARSING (15%) - Offload synchronous PDF layout conversion
             await asyncio.sleep(0.01)
-            if self.queue.is_cancelled(job_id):
-                return self._handle_cancelled(job_id, doc_id, 15.0)
+            if await asyncio.to_thread(self._is_cancelled_sync, job_id, doc_id):
+                return await asyncio.to_thread(self._handle_cancelled, job_id, doc_id, 15.0)
 
-            update_job_progress_in_db(job_id, DocumentStatusEnum.PROCESSING, IngestionStageEnum.PARSING, 15.0)
-            parsed_doc: ParsedDocumentResult = self._execute_stage_parsing(payload.pdf_bytes, payload.filename)
+            await asyncio.to_thread(self._advance_stage_sync, job_id, IngestionStageEnum.PARSING, 15.0)
+            parsed_doc: ParsedDocumentResult = await asyncio.to_thread(
+                self._execute_stage_parsing, payload.pdf_bytes, payload.filename
+            )
 
-            # Stage 2: PII_REDACTION (30%)
+            # Stage 2: PII_REDACTION (30%) - Offload synchronous Presidio / regex redaction
             await asyncio.sleep(0.01)
-            if self.queue.is_cancelled(job_id):
-                return self._handle_cancelled(job_id, doc_id, 30.0)
+            if await asyncio.to_thread(self._is_cancelled_sync, job_id, doc_id):
+                return await asyncio.to_thread(self._handle_cancelled, job_id, doc_id, 30.0)
 
-            update_job_progress_in_db(job_id, DocumentStatusEnum.PROCESSING, IngestionStageEnum.PII_REDACTION, 30.0)
-            redaction_res, redacted_blocks = self._execute_stage_pii(parsed_doc)
+            await asyncio.to_thread(self._advance_stage_sync, job_id, IngestionStageEnum.PII_REDACTION, 30.0)
+            redaction_res, redacted_blocks = await asyncio.to_thread(
+                self._execute_stage_pii, parsed_doc
+            )
 
-            # Stage 3: ENTITY_EXTRACTION (45%)
+            # Stage 3: ENTITY_EXTRACTION (45%) - Offload synchronous entity extraction
             await asyncio.sleep(0.01)
-            if self.queue.is_cancelled(job_id):
-                return self._handle_cancelled(job_id, doc_id, 45.0)
+            if await asyncio.to_thread(self._is_cancelled_sync, job_id, doc_id):
+                return await asyncio.to_thread(self._handle_cancelled, job_id, doc_id, 45.0)
 
-            update_job_progress_in_db(job_id, DocumentStatusEnum.PROCESSING, IngestionStageEnum.ENTITY_EXTRACTION, 45.0)
-            entities = extract_entities(redaction_res.cleaned_text)
+            await asyncio.to_thread(self._advance_stage_sync, job_id, IngestionStageEnum.ENTITY_EXTRACTION, 45.0)
+            entities = await asyncio.to_thread(
+                self._execute_stage_entity_extraction, redaction_res.cleaned_text
+            )
             entity_names = [e.text for e in entities]
 
-            # Stage 4: CHUNKING (60%)
+            # Stage 4: CHUNKING & MASTER PERSISTENCE (60%) - Offload chunk creation & PostgreSQL master save
             await asyncio.sleep(0.01)
-            if self.queue.is_cancelled(job_id):
-                return self._handle_cancelled(job_id, doc_id, 60.0)
+            if await asyncio.to_thread(self._is_cancelled_sync, job_id, doc_id):
+                return await asyncio.to_thread(self._handle_cancelled, job_id, doc_id, 60.0)
 
-            update_job_progress_in_db(job_id, DocumentStatusEnum.PROCESSING, IngestionStageEnum.CHUNKING, 60.0)
-            chunks = create_structured_chunks(
-                blocks=redacted_blocks,
-                document_id=doc_id,
-                source_filename=payload.filename,
-                entities=entity_names,
+            await asyncio.to_thread(self._advance_stage_sync, job_id, IngestionStageEnum.CHUNKING, 60.0)
+            chunks, metadata = await asyncio.to_thread(
+                self._execute_stage_chunking_and_master_persistence,
+                redacted_blocks,
+                doc_id,
+                payload,
+                entity_names,
+                parsed_doc,
             )
-
-            metadata = DocumentMetadataInterface(
-                document_id=doc_id,
-                tenant_id=payload.tenant_id,
-                title=payload.title or payload.filename,
-                source_filename=payload.filename,
-                total_pages=parsed_doc.total_pages,
-                total_chunks=len(chunks),
-                created_at=datetime.now(timezone.utc).isoformat(),
-            )
-
-            # Persist authoritative master document and chunks to PostgreSQL FIRST
-            save_document_to_db(metadata)
-            save_chunks_to_db(chunks)
 
             # Stage 5: EMBEDDING (75%)
             await asyncio.sleep(0.01)
-            if self.queue.is_cancelled(job_id):
-                return self._handle_cancelled(job_id, doc_id, 75.0)
+            if await asyncio.to_thread(self._is_cancelled_sync, job_id, doc_id):
+                return await asyncio.to_thread(self._handle_cancelled, job_id, doc_id, 75.0)
 
-            update_job_progress_in_db(job_id, DocumentStatusEnum.PROCESSING, IngestionStageEnum.EMBEDDING, 75.0)
+            await asyncio.to_thread(self._advance_stage_sync, job_id, IngestionStageEnum.EMBEDDING, 75.0)
 
-            # Stage 6: INDEXING (90%) - Derived stores
+            # Stage 6: INDEXING (90%) - Offload derived store indexing (Pinecone, BM25, Neo4j)
             await asyncio.sleep(0.01)
-            if self.queue.is_cancelled(job_id):
-                return self._handle_cancelled(job_id, doc_id, 90.0)
+            if await asyncio.to_thread(self._is_cancelled_sync, job_id, doc_id):
+                return await asyncio.to_thread(self._handle_cancelled, job_id, doc_id, 90.0)
 
-            update_job_progress_in_db(job_id, DocumentStatusEnum.PROCESSING, IngestionStageEnum.INDEXING, 90.0)
+            await asyncio.to_thread(self._advance_stage_sync, job_id, IngestionStageEnum.INDEXING, 90.0)
             indexing_ok = await self._execute_derived_indexing_with_retry(payload, chunks, entities)
 
-            final_status = DocumentStatusEnum.COMPLETED if indexing_ok else DocumentStatusEnum.PARTIAL
-            final_stage = IngestionStageEnum.COMPLETED
+            if await asyncio.to_thread(self._is_cancelled_sync, job_id, doc_id):
+                return await asyncio.to_thread(self._handle_cancelled, job_id, doc_id, 90.0)
 
-            update_job_progress_in_db(
-                job_id=job_id,
-                status=final_status,
-                stage=final_stage,
-                progress_percent=100.0,
-                completed_at=datetime.now(timezone.utc).isoformat(),
-            )
-            update_document_status_in_db(doc_id, final_status, len(chunks))
+            final_status = DocumentStatusEnum.COMPLETED if indexing_ok else DocumentStatusEnum.PARTIAL
+
+            await asyncio.to_thread(self._finalize_sync, job_id, doc_id, final_status, len(chunks))
 
             logger.info(
                 FUNC_PROCESS_JOB,
@@ -233,11 +223,41 @@ class IngestionWorker:
             return final_status
 
         except ValidationError as val_err:
-            # Permanent validation error - do not retry
-            return self._handle_failure(job_id, doc_id, str(val_err), is_permanent=True)
+            return await asyncio.to_thread(self._handle_failure, job_id, doc_id, str(val_err), True)
         except Exception as exc:
-            # Handle failure with retry check if not already retried
-            return self._handle_failure(job_id, doc_id, str(exc), is_permanent=False)
+            return await asyncio.to_thread(self._handle_failure, job_id, doc_id, str(exc), False)
+
+    # ── Grouped synchronous helpers (offloaded via asyncio.to_thread) ──
+
+    def _is_cancelled_sync(self, job_id: str, doc_id: str) -> bool:
+        """Check cancellation state: queue flag OR document deleted from DB (synchronous)."""
+        return self.queue.is_cancelled(job_id) or not get_document_metadata_from_db(doc_id)
+
+    def _begin_processing_sync(self, job_id: str, doc_id: str, started_at: str) -> None:
+        """Mark job PROCESSING and update document status (synchronous)."""
+        update_job_progress_in_db(
+            job_id=job_id,
+            status=DocumentStatusEnum.PROCESSING,
+            stage=IngestionStageEnum.PARSING,
+            progress_percent=10.0,
+            started_at=started_at,
+        )
+        update_document_status_in_db(doc_id, DocumentStatusEnum.PROCESSING, 0)
+
+    def _advance_stage_sync(self, job_id: str, stage: IngestionStageEnum, progress: float) -> None:
+        """Advance job progress to a new stage (synchronous)."""
+        update_job_progress_in_db(job_id, DocumentStatusEnum.PROCESSING, stage, progress)
+
+    def _finalize_sync(self, job_id: str, doc_id: str, final_status: DocumentStatusEnum, chunk_count: int) -> None:
+        """Write final completion state to job and document records (synchronous)."""
+        update_job_progress_in_db(
+            job_id=job_id,
+            status=final_status,
+            stage=IngestionStageEnum.COMPLETED,
+            progress_percent=100.0,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        update_document_status_in_db(doc_id, final_status, chunk_count)
 
     def _handle_cancelled(self, job_id: str, doc_id: str, progress: float) -> DocumentStatusEnum:
         """Mark job and document as cancelled."""
@@ -277,12 +297,12 @@ class IngestionWorker:
 
     @trace_step(name="pdf_parsing", run_type="parser")
     def _execute_stage_parsing(self, pdf_bytes: bytes, filename: str) -> ParsedDocumentResult:
-        """Execute PDF layout parsing stage."""
+        """Execute PDF layout parsing stage (synchronous helper)."""
         return parse_pdf_document(pdf_bytes=pdf_bytes, filename=filename)
 
     @trace_step(name="pii_redaction", run_type="chain")
     def _execute_stage_pii(self, parsed_doc: ParsedDocumentResult) -> tuple[RedactionResult, list[ParsedPageBlock]]:
-        """Execute PII redaction on layout blocks."""
+        """Execute PII redaction on layout blocks (synchronous helper)."""
         redaction_res = redact_pii(parsed_doc.full_text)
         redacted_blocks: list[ParsedPageBlock] = []
         for block in parsed_doc.blocks:
@@ -298,24 +318,68 @@ class IngestionWorker:
             )
         return redaction_res, redacted_blocks
 
+    def _execute_stage_entity_extraction(self, text: str) -> list[EntityInterface]:
+        """Execute entity extraction (synchronous helper)."""
+        return extract_entities(text)
+
+    def _execute_stage_chunking_and_master_persistence(
+        self,
+        redacted_blocks: list[ParsedPageBlock],
+        doc_id: str,
+        payload: IngestionJobPayload,
+        entity_names: list[str],
+        parsed_doc: ParsedDocumentResult,
+    ) -> tuple[list[ChunkInterface], DocumentMetadataInterface]:
+        """Execute structured chunk creation and master PostgreSQL persistence (synchronous helper)."""
+        chunks = create_structured_chunks(
+            blocks=redacted_blocks,
+            document_id=doc_id,
+            source_filename=payload.filename,
+            entities=entity_names,
+        )
+
+        metadata = DocumentMetadataInterface(
+            document_id=doc_id,
+            tenant_id=payload.tenant_id,
+            title=payload.title or payload.filename,
+            source_filename=payload.filename,
+            total_pages=parsed_doc.total_pages,
+            total_chunks=len(chunks),
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+        # Persist authoritative master document and chunks to PostgreSQL FIRST
+        save_document_to_db(metadata)
+        save_chunks_to_db(chunks)
+
+        return chunks, metadata
+
+    def _execute_derived_indexing_sync(
+        self,
+        chunks: list[ChunkInterface],
+        entities: list[EntityInterface],
+    ) -> None:
+        """Execute derived indexing across Pinecone, BM25, and Neo4j (synchronous helper)."""
+        upsert_vector_chunks(chunks)
+        index_bm25_chunks(chunks)
+        upsert_graph_nodes(chunks, entities)
+
     async def _execute_derived_indexing_with_retry(
         self,
         payload: IngestionJobPayload,
         chunks: list[ChunkInterface],
         entities: list[EntityInterface],
     ) -> bool:
-        """Execute derived indexing across Pinecone, BM25, and Neo4j with bounded exponential retry for transient errors."""
+        """Execute derived indexing with retry offloaded to thread."""
         max_retries = payload.max_retries
         attempt = 0
 
         while attempt <= max_retries:
+            if self.queue.is_cancelled(payload.job_id) or not get_document_metadata_from_db(payload.document_id):
+                return False
+
             try:
-                # 1. Pinecone Vector Upsert
-                upsert_vector_chunks(chunks)
-                # 2. BM25 Inverted Indexing
-                index_bm25_chunks(chunks)
-                # 3. Neo4j Graph Nodes Upsert
-                upsert_graph_nodes(chunks, entities)
+                await asyncio.to_thread(self._execute_derived_indexing_sync, chunks, entities)
                 return True
             except Exception as exc:
                 attempt += 1
@@ -340,6 +404,7 @@ class IngestionWorker:
                     retry_count=attempt,
                     error_message=f"Retry {attempt}/{max_retries}: {exc}",
                 )
+                await asyncio.sleep(backoff_s)
         return False
 
 
@@ -373,4 +438,3 @@ def get_or_start_worker(queue: Optional[JobQueueInterface] = None) -> IngestionW
         _GLOBAL_WORKER.start()
 
     return _GLOBAL_WORKER
-

@@ -15,16 +15,25 @@ from data_access.vector_data_access import (
     clear_pinecone_index_cache,
     upsert_vector_chunks,
     query_vector_store,
+    delete_vector_chunks_by_document_id,
+    clear_all_vector_chunks,
+    _LOCAL_MOCK_VECTOR_STORE,
 )
 from data_access.bm25_data_access import (
     index_bm25_chunks,
     query_bm25_index,
     init_bm25_from_db,
     evict_document_from_bm25,
+    clear_all_bm25_index,
+    _BM25_DOC_STORE,
 )
 from data_access.graph_data_access import (
     upsert_graph_nodes,
     query_graph_store,
+    delete_graph_nodes_by_document_id,
+    clear_all_graph_nodes,
+    get_neo4j_driver,
+    _CHUNK_STORE,
 )
 from data_access.db_data_access import (
     ensure_db_schema,
@@ -40,6 +49,8 @@ from data_access.db_data_access import (
     get_ingestion_job_from_db,
     get_latest_job_for_document_from_db,
     clear_local_job_store,
+    list_documents_from_db,
+    clear_all_db_data,
 )
 from data_access.reranker_data_access import (
     get_reranker_model,
@@ -59,12 +70,21 @@ __all__ = [
     "get_pinecone_index",
     "upsert_vector_chunks",
     "query_vector_store",
+    "delete_vector_chunks_by_document_id",
+    "clear_all_vector_chunks",
+    "_LOCAL_MOCK_VECTOR_STORE",
     "index_bm25_chunks",
     "query_bm25_index",
     "init_bm25_from_db",
     "evict_document_from_bm25",
+    "clear_all_bm25_index",
+    "_BM25_DOC_STORE",
     "upsert_graph_nodes",
     "query_graph_store",
+    "delete_graph_nodes_by_document_id",
+    "clear_all_graph_nodes",
+    "get_neo4j_driver",
+    "_CHUNK_STORE",
     "ensure_db_schema",
     "save_document_to_db",
     "update_document_status_in_db",
@@ -73,10 +93,14 @@ __all__ = [
     "get_document_status_from_db",
     "load_all_chunks_from_db",
     "delete_document_from_db",
+    "clear_all_db_data",
+    "list_documents_from_db",
     "get_reranker_model",
     "rerank_fused_candidates",
     "set_mock_reranker_mode",
     "generate_llm_completion",
     "set_mock_llm_mode",
 ]
+
+
 
