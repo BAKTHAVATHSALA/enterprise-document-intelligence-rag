@@ -47,6 +47,96 @@ describe('Phase 7 — Enterprise Document Intelligence Frontend Test Suite', () 
     vi.restoreAllMocks();
   });
 
+  it('state regression: stale fetch result cannot overwrite newer list state', async () => {
+    const docA = { ...mockDocuments[0] };
+    const docB = { ...mockDocuments[1] };
+    const docC = {
+      ...mockDocuments[0],
+      document_id: 'doc_newer22',
+      title: 'Newer Document.pdf',
+      source_filename: 'Newer Document.pdf',
+      job_id: 'job_newer22',
+    };
+
+    let resolveOlder: ((value: DocumentListItem[]) => void) | undefined;
+    let resolveNewer: ((value: DocumentListItem[]) => void) | undefined;
+
+    vi.spyOn(api, 'listDocuments').mockImplementationOnce(
+      () => new Promise((resolve) => {
+        resolveOlder = resolve;
+      })
+    ).mockImplementationOnce(
+      () => new Promise((resolve) => {
+        resolveNewer = resolve;
+      })
+    );
+
+    render(<DocumentsPage />);
+
+    fireEvent.click(screen.getByTestId('refresh-docs-btn'));
+
+    resolveNewer?.([docA, docB, docC]);
+    await waitFor(() => {
+      expect(screen.getByText('Security Policy.pdf')).toBeInTheDocument();
+      expect(screen.getByText('Newer Document.pdf')).toBeInTheDocument();
+    });
+
+    resolveOlder?.([docA]);
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/document-row-/).length).toBeGreaterThanOrEqual(2);
+    });
+
+    expect(screen.queryAllByText('doc_newer22').length).toBeGreaterThan(0);
+    expect(screen.queryAllByText('Newer Document.pdf').length).toBe(1);
+  });
+
+  it('state regression: refreshes and duplicate submissions do not create duplicate document rows', async () => {
+    const docA = { ...mockDocuments[0] };
+    const docB = { ...mockDocuments[1] };
+    const docC = { ...docA, document_id: 'doc_unique_3', title: 'Third Document.pdf', source_filename: 'Third Document.pdf', job_id: 'job_unique_3' };
+
+    vi.spyOn(api, 'listDocuments').mockResolvedValueOnce([docA, docB]).mockResolvedValueOnce([docA, docB, docC]).mockResolvedValueOnce([docA, docB, docC]);
+    vi.spyOn(api, 'getDocumentStatus').mockResolvedValue({
+      document_id: 'doc_priv456',
+      status: 'COMPLETED',
+      stage: 'COMPLETED',
+      progress_percent: 100,
+      processed_chunks: 18,
+    });
+
+    render(<DocumentsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Security Policy.pdf')).toBeInTheDocument();
+      expect(screen.getByText('Privacy Framework.pdf')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('refresh-docs-btn'));
+    fireEvent.click(screen.getByTestId('refresh-docs-btn'));
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Security Policy.pdf')).toHaveLength(1);
+      expect(screen.getAllByText('Privacy Framework.pdf')).toHaveLength(1);
+      expect(screen.getAllByText('Third Document.pdf')).toHaveLength(1);
+    });
+  });
+
+  it('state regression: delete confirmation opens immediately without waiting for document refresh', async () => {
+    vi.spyOn(api, 'listDocuments').mockResolvedValue(mockDocuments);
+
+    render(<DocumentsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Security Policy.pdf')).toBeInTheDocument();
+    });
+
+    const deleteButtons = screen.getAllByRole('button', { name: /delete document/i });
+    fireEvent.click(deleteButtons[0]);
+
+    expect(screen.getByTestId('delete-confirm-modal')).toBeInTheDocument();
+    expect(screen.getByText(/Delete Document\?/)).toBeInTheDocument();
+  });
+
   // TEST 1: Documents page renders with real document list and headers
   it('1. Documents page renders with real document list and headers', async () => {
     vi.spyOn(api, 'listDocuments').mockResolvedValue(mockDocuments);

@@ -9,7 +9,6 @@ import {
   Ban,
   ArrowRight,
   Loader2,
-  Trash2
 } from 'lucide-react';
 import { api } from '../../services/api';
 import { 
@@ -49,7 +48,6 @@ export const DocumentDetailDrawer: React.FC<DocumentDetailDrawerProps> = ({
 }) => {
   const [currentStatus, setCurrentStatus] = useState<DocumentStatus | null>(null);
   const [isCancelling, setIsCancelling] = useState<boolean>(false);
-  const [isDeleting, setIsDeleting] = useState<boolean>(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -102,25 +100,6 @@ export const DocumentDetailDrawer: React.FC<DocumentDetailDrawerProps> = ({
       setCancelError(err.message || 'Failed to cancel ingestion job.');
     } finally {
       setIsCancelling(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!document) return;
-    if (!window.confirm(`Permanently delete document '${document.title || document.source_filename}' (${document.document_id})?`)) {
-      return;
-    }
-
-    setIsDeleting(true);
-    setCancelError(null);
-
-    try {
-      await api.deleteDocument(document.document_id);
-      onClose();
-    } catch (err: any) {
-      setCancelError(err.message || 'Failed to delete document.');
-    } finally {
-      setIsDeleting(false);
     }
   };
 

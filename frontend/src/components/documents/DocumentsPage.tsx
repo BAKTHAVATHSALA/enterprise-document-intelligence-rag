@@ -33,27 +33,56 @@ export const DocumentsPage: React.FC<DocumentsPageProps> = ({ onDocumentCountCha
   // Polling tracker ref to prevent concurrent requests
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isMountedRef = useRef<boolean>(true);
+  const fetchGenerationRef = useRef<number>(0);
+
+  const mergeDocuments = useCallback((existing: DocumentListItem[], incoming: DocumentListItem[]) => {
+    const merged = new Map<string, DocumentListItem>();
+
+    for (const doc of existing) {
+      merged.set(doc.document_id, doc);
+    }
+
+    for (const doc of incoming) {
+      const existingDoc = merged.get(doc.document_id);
+      merged.set(doc.document_id, existingDoc ? { ...existingDoc, ...doc } : doc);
+    }
+
+    const ordered = [...incoming];
+    const seen = new Set<string>(ordered.map(doc => doc.document_id));
+
+    for (const doc of existing) {
+      if (!seen.has(doc.document_id)) {
+        ordered.push(doc);
+      }
+    }
+
+    return ordered;
+  }, []);
 
   const fetchDocuments = useCallback(async () => {
+    const requestId = ++fetchGenerationRef.current;
+
     try {
       setError(null);
       const docs = await api.listDocuments();
-      if (isMountedRef.current) {
-        setDocuments(docs);
-        if (onDocumentCountChange) {
-          onDocumentCountChange(docs.length);
-        }
+      if (!isMountedRef.current || requestId !== fetchGenerationRef.current) {
+        return;
+      }
+
+      setDocuments(prevDocs => mergeDocuments(prevDocs, docs));
+      if (onDocumentCountChange) {
+        onDocumentCountChange(docs.length);
       }
     } catch (err: any) {
-      if (isMountedRef.current) {
+      if (isMountedRef.current && requestId === fetchGenerationRef.current) {
         setError(err.message || 'Failed to load documents from database.');
       }
     } finally {
-      if (isMountedRef.current) {
+      if (isMountedRef.current && requestId === fetchGenerationRef.current) {
         setIsLoading(false);
       }
     }
-  }, [onDocumentCountChange]);
+  }, [mergeDocuments, onDocumentCountChange]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -81,81 +110,69 @@ export const DocumentsPage: React.FC<DocumentsPageProps> = ({ onDocumentCountCha
       return;
     }
 
-    if (!pollingRef.current) {
-      pollingRef.current = setInterval(async () => {
-        if (!isMountedRef.current) return;
-
-        // Poll status for each active document
-        for (const doc of activeDocs) {
-          try {
-            const statusUpdate = await api.getDocumentStatus(doc.document_id);
-            if (!isMountedRef.current) return;
-
-            setDocuments(prevDocs => 
-              prevDocs.map(item => {
-                if (item.document_id === doc.document_id) {
-                  return {
-                    ...item,
-                    status: statusUpdate.status,
-                    stage: statusUpdate.stage || item.stage,
-                    progress_percent: statusUpdate.progress_percent ?? item.progress_percent,
-                    total_chunks: statusUpdate.processed_chunks || item.total_chunks,
-                    error_message: statusUpdate.error_message || item.error_message,
-                  };
-                }
-                return item;
-              })
-            );
-
-            // If selected document in drawer is updating, sync it
-            if (selectedDoc && selectedDoc.document_id === doc.document_id) {
-              setSelectedDoc(prev => prev ? {
-                ...prev,
-                status: statusUpdate.status,
-                stage: statusUpdate.stage || prev.stage,
-                progress_percent: statusUpdate.progress_percent ?? prev.progress_percent,
-                total_chunks: statusUpdate.processed_chunks || prev.total_chunks,
-                error_message: statusUpdate.error_message || prev.error_message,
-              } : null);
-            }
-          } catch {
-            // Ignore polling network hiccup
-          }
-        }
-      }, 1500);
+    if (pollingRef.current) {
+      return;
     }
 
+    const intervalId = setInterval(async () => {
+      if (!isMountedRef.current) return;
+
+      for (const doc of activeDocs) {
+        try {
+          const statusUpdate = await api.getDocumentStatus(doc.document_id);
+          if (!isMountedRef.current) return;
+
+          setDocuments(prevDocs => {
+            const nextDocs = prevDocs.map(item => {
+              if (item.document_id === doc.document_id) {
+                return {
+                  ...item,
+                  status: statusUpdate.status,
+                  stage: statusUpdate.stage || item.stage,
+                  progress_percent: statusUpdate.progress_percent ?? item.progress_percent,
+                  total_chunks: statusUpdate.processed_chunks || item.total_chunks,
+                  error_message: statusUpdate.error_message || item.error_message,
+                };
+              }
+              return item;
+            });
+
+            return mergeDocuments(prevDocs, nextDocs);
+          });
+
+          if (selectedDoc && selectedDoc.document_id === doc.document_id) {
+            setSelectedDoc(prev => prev ? {
+              ...prev,
+              status: statusUpdate.status,
+              stage: statusUpdate.stage || prev.stage,
+              progress_percent: statusUpdate.progress_percent ?? prev.progress_percent,
+              total_chunks: statusUpdate.processed_chunks || prev.total_chunks,
+              error_message: statusUpdate.error_message || prev.error_message,
+            } : null);
+          }
+        } catch {
+          // Ignore polling network hiccup
+        }
+      }
+    }, 1500);
+
+    pollingRef.current = intervalId;
+
     return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
+      clearInterval(intervalId);
+      if (pollingRef.current === intervalId) {
         pollingRef.current = null;
       }
     };
-  }, [documents, selectedDoc]);
+  }, [documents, mergeDocuments, selectedDoc]);
 
-  const handleUploadAccepted = (statusRes: DocumentStatus) => {
-    const newDoc: DocumentListItem = {
-      document_id: statusRes.document_id,
-      tenant_id: statusRes.tenant_id || 'default_tenant',
-      title: statusRes.document_id,
-      source_filename: 'uploaded_document.pdf',
-      total_pages: 1,
-      total_chunks: 0,
-      status: statusRes.status,
-      stage: statusRes.stage || 'QUEUED',
-      progress_percent: statusRes.progress_percent || 0,
-      created_at: new Date().toISOString(),
-      job_id: statusRes.job_id,
-    };
-
-    setDocuments(prev => [newDoc, ...prev]);
+  const handleUploadAccepted = (_statusRes: DocumentStatus) => {
+    // The authoritative list is fetched from the server after the upload is accepted.
+    // Avoid creating a duplicate fake document in local state.
     if (onDocumentCountChange) {
       onDocumentCountChange(documents.length + 1);
     }
-    // Refresh to get full metadata from PostgreSQL
-    setTimeout(() => {
-      fetchDocuments();
-    }, 500);
+    fetchDocuments();
   };
 
   const handleRowClick = (doc: DocumentListItem) => {
@@ -176,16 +193,21 @@ export const DocumentsPage: React.FC<DocumentsPageProps> = ({ onDocumentCountCha
 
   const handleConfirmDelete = async () => {
     if (!deleteConfirmDoc) return;
+    const docIdToDelete = deleteConfirmDoc.document_id;
     setIsDeleting(true);
     setDeleteError(null);
 
     try {
-      await api.deleteDocument(deleteConfirmDoc.document_id);
-      if (selectedDoc && selectedDoc.document_id === deleteConfirmDoc.document_id) {
+      await api.deleteDocument(docIdToDelete);
+
+      setDocuments(prevDocs => prevDocs.filter(doc => doc.document_id !== docIdToDelete));
+      if (selectedDoc && selectedDoc.document_id === docIdToDelete) {
         setIsDetailDrawerOpen(false);
         setSelectedDoc(null);
       }
+
       setDeleteConfirmDoc(null);
+      fetchGenerationRef.current += 1;
       await fetchDocuments();
     } catch (err: any) {
       setDeleteError(err.message || 'Failed to delete document.');
