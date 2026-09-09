@@ -4,6 +4,7 @@ fastapi>=0.110.0
 uvicorn>=0.28.0
 pydantic>=2.6.0
 python-dotenv>=1.0.0
+python-multipart>=0.0.9
 openai>=1.14.0
 pinecone>=6.0.0
 docling>=1.0.0
